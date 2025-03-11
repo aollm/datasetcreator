@@ -3,7 +3,7 @@ import glob
 import json
 import torch
 import logging
-from tqdm.notebook import tqdm
+from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import time
