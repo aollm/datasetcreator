@@ -1,25 +1,14 @@
-# Import required libraries
 import os
 import glob
 import json
 import torch
 import logging
-import argparse
 from tqdm.notebook import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import time
 from pathlib import Path
 import multiprocessing
-
-# Parse command line arguments
-parser = argparse.ArgumentParser(description="Process repository files with LLM")
-parser.add_argument("--input", type=str, default="./aos/", help="Input directory path")
-parser.add_argument("--output", type=str, default="./save-aos/", help="Output directory path")
-parser.add_argument("--model", type=str, default="unsloth/Qwen2.5-Coder-14B-Instruct-bnb-4bit", help="Model name")
-parser.add_argument("--num-gpus", type=int, default=5, help="Number of GPUs to use")
-parser.add_argument("--batch-size", type=int, default=10, help="Batch size for processing")
-args = parser.parse_args()
 
 # Configure logging
 logging.basicConfig(
@@ -32,12 +21,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Configuration from command line arguments
-input_dir = args.input      # Path to your repository
-output_dir = args.output    # Path to save the dataset
-model_name = args.model     # Model to use
-num_gpus = args.num_gpus    # Number of GPUs to use
-batch_size = args.batch_size # Number of files to process before saving
+# Configuration (Change these as needed)
+input_dir = "./aos/"        # Path to your repository
+output_dir = "./save-aos/"       # Path to save the dataset
+model_name = "unsloth/Qwen2.5-Coder-32B-Instruct-bnb-4bit"  # Quantized model for memory efficiency
+num_gpus = 5                 # Number of GPUs to use
+batch_size = 10              # Number of files to process before saving
 
 # Process all file extensions - no filtering based on extension
 
@@ -48,7 +37,7 @@ ignore_patterns = [
 ]
 
 # Maximum file size to process (in bytes)
-max_file_size = 200 * 1024  # 200KB
+max_file_size = 300 * 1024  # 100KB
 
 # Create output directory
 os.makedirs(output_dir, exist_ok=True)
@@ -362,93 +351,89 @@ def process_files_with_gpu(files, gpu_id, model_name, output_dir, batch_size, ch
     
     print(f"GPU {gpu_id} completed processing")
 
-def main():
-    # Find all files to process
-    files_to_process = find_files(input_dir)
+# Find all files to process
+files_to_process = find_files(input_dir)
 
-    # Check available GPUs
-    available_gpus = min(torch.cuda.device_count(), num_gpus)
-    if available_gpus == 0:
-        print("No GPUs available")
-    else:
-        print(f"Using {available_gpus} GPUs")
-        
-        # Distribute files across GPUs
-        files_per_gpu = [[] for _ in range(available_gpus)]
-        for i, file_path in enumerate(files_to_process):
-            gpu_idx = i % available_gpus
-            files_per_gpu[gpu_idx].append(file_path)
-        
-        # This function helps run the process in a separate process
-        def run_gpu_process(gpu_id):
-            checkpoint_file = os.path.join(checkpoint_dir, f"gpu_{gpu_id}_checkpoint.json")
-            process_files_with_gpu(
-                files_per_gpu[gpu_id],
-                gpu_id,
-                model_name,
-                output_dir,
-                batch_size,
-                checkpoint_file
-            )
-        
-        # Create a process for each GPU
-        processes = []
-        for gpu_id in range(available_gpus):
-            p = multiprocessing.Process(target=run_gpu_process, args=(gpu_id,))
-            processes.append(p)
-            p.start()
-        
-        # Wait for all processes to complete
-        for p in processes:
-            p.join()
-        
-        print("All processing complete")
-        
-        # Combine all batches into a final dataset
-        final_dataset = []
-        for gpu_id in range(available_gpus):
-            gpu_dir = os.path.join(output_dir, f"gpu_{gpu_id}")
-            if os.path.exists(gpu_dir):
-                batch_files = glob.glob(os.path.join(gpu_dir, "batch_*.json"))
-                for batch_file in batch_files:
-                    with open(batch_file, 'r', encoding='utf-8') as f:
-                        batch_data = json.load(f)
-                        final_dataset.extend(batch_data)
-        
-        # Save final dataset
-        final_output = os.path.join(output_dir, "final_dataset.json")
-        with open(final_output, 'w', encoding='utf-8') as f:
-            json.dump(final_dataset, f, ensure_ascii=False, indent=2)
-        
-        print(f"Final dataset with {len(final_dataset)} entries saved to {final_output}")
+# Check available GPUs
+available_gpus = min(torch.cuda.device_count(), num_gpus)
+if available_gpus == 0:
+    print("No GPUs available")
+else:
+    print(f"Using {available_gpus} GPUs")
+    
+    # Distribute files across GPUs
+    files_per_gpu = [[] for _ in range(available_gpus)]
+    for i, file_path in enumerate(files_to_process):
+        gpu_idx = i % available_gpus
+        files_per_gpu[gpu_idx].append(file_path)
+    
+    # This function helps run the process in a separate process
+    def run_gpu_process(gpu_id):
+        checkpoint_file = os.path.join(checkpoint_dir, f"gpu_{gpu_id}_checkpoint.json")
+        process_files_with_gpu(
+            files_per_gpu[gpu_id],
+            gpu_id,
+            model_name,
+            output_dir,
+            batch_size,
+            checkpoint_file
+        )
+    
+    # Create a process for each GPU
+    processes = []
+    for gpu_id in range(available_gpus):
+        p = multiprocessing.Process(target=run_gpu_process, args=(gpu_id,))
+        processes.append(p)
+        p.start()
+    
+    # Wait for all processes to complete
+    for p in processes:
+        p.join()
+    
+    print("All processing complete")
+    
+    # Combine all batches into a final dataset
+    final_dataset = []
+    for gpu_id in range(available_gpus):
+        gpu_dir = os.path.join(output_dir, f"gpu_{gpu_id}")
+        if os.path.exists(gpu_dir):
+            batch_files = glob.glob(os.path.join(gpu_dir, "batch_*.json"))
+            for batch_file in batch_files:
+                with open(batch_file, 'r', encoding='utf-8') as f:
+                    batch_data = json.load(f)
+                    final_dataset.extend(batch_data)
+    
+    # Save final dataset
+    final_output = os.path.join(output_dir, "final_dataset.json")
+    with open(final_output, 'w', encoding='utf-8') as f:
+        json.dump(final_dataset, f, ensure_ascii=False, indent=2)
+    
+    print(f"Final dataset with {len(final_dataset)} entries saved to {final_output}")
 
-    # Generate statistics about processed files
-    if os.path.exists(os.path.join(output_dir, "final_dataset.json")):
-        with open(os.path.join(output_dir, "final_dataset.json"), 'r', encoding='utf-8') as f:
-            dataset = json.load(f)
+# Generate statistics about processed files
+if os.path.exists(os.path.join(output_dir, "final_dataset.json")):
+    with open(os.path.join(output_dir, "final_dataset.json"), 'r', encoding='utf-8') as f:
+        dataset = json.load(f)
+    
+    # Count files by type
+    file_types = {}
+    file_extensions = {}
+    
+    for entry in dataset:
+        file_type = entry.get("file_type", "unknown")
+        file_extension = entry.get("file_extension", "unknown")
         
-        # Count files by type
-        file_types = {}
-        file_extensions = {}
-        
-        for entry in dataset:
-            file_type = entry.get("file_type", "unknown")
-            file_extension = entry.get("file_extension", "unknown")
-            
-            file_types[file_type] = file_types.get(file_type, 0) + 1
-            file_extensions[file_extension] = file_extensions.get(file_extension, 0) + 1
-        
-        # Save statistics
-        stats = {
-            "total_files": len(dataset),
-            "file_types": file_types,
-            "file_extensions": file_extensions
-        }
-        
-        with open(os.path.join(output_dir, "statistics.json"), 'w', encoding='utf-8') as f:
-            json.dump(stats, f, ensure_ascii=False, indent=2)
-        
-        print("Statistics generated and saved to statistics.json")
-
-if __name__ == "__main__":
-    main()
+        file_types[file_type] = file_types.get(file_type, 0) + 1
+        file_extensions[file_extension] = file_extensions.get(file_extension, 0) + 1
+    
+    # Save statistics
+    stats = {
+        "total_files": len(dataset),
+        "file_types": file_types,
+        "file_extensions": file_extensions
+    }
+    
+    with open(os.path.join(output_dir, "statistics.json"), 'w', encoding='utf-8') as f:
+        json.dump(stats, f, ensure_ascii=False, indent=2)
+    
+    print("Statistics generated and saved to statistics.json")
